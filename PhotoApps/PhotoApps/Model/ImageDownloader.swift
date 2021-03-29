@@ -13,55 +13,71 @@ class ImageDownloader {
 
     private var cachedImages: [URL: UIImage]
     private var imagesDownloadTasks: [URL: URLSessionDataTask]
+    private let dictionaryUpdateQueue: DispatchQueue
     
     init() {
         cachedImages = [:]
         imagesDownloadTasks = [:]
+        dictionaryUpdateQueue = DispatchQueue(label: "dictionary",
+                                              qos: .userInitiated,
+                                              attributes: .concurrent,
+                                              autoreleaseFrequency: .workItem,
+                                              target: nil)
     }
-    
-    func downloadImage(imageURL: URL,
-                       completionHandler: @escaping (UIImage?, Bool) -> Void) { //Bool은 성공, 실패의 의미
-        
-        //image가 이미 캐싱되어 있다면 해당 이미지와 함께 리턴
-        if let image = getCachedImageFrom(url: imageURL) {
-            completionHandler(image, true)
-        } else {
-            //task가 이미 생성(진행된 적이 있다면)되어 있다면 리턴
-            guard getDataTaskFrom(url: imageURL) == nil else { return }
-            
-            //iamgeURL에 대한 task 설정
-            let task = URLSession.shared.dataTask(with: imageURL) { (data, response, error) in
-                
-                //이미지를 가져올 수 없다면 nil과 함께 리턴
-                guard data != nil, error == nil else {
-                    DispatchQueue.main.async {
-                        completionHandler(nil, false)
-                    }
-                    return
-                }
 
-                let image = UIImage(data: data!)
-                self.cachedImages[imageURL] = image
-                
-                //성공한 경우 이미지와 함께 리턴
-                DispatchQueue.main.async {
-                    completionHandler(image, true)
-                }
+    func downloadImage(inQueue queue: DispatchQueue,
+                       imageURL: URL,
+                       completionHandler: @escaping (UIImage) -> Void,
+                       placeholderImage: UIImage) {
+        
+        guard getDataTaskFrom(url: imageURL) == nil else { return }
+        
+        let task = URLSession.shared.dataTask(with: imageURL) { (data, response, error) in
+            
+            guard error == nil else {
+                completionHandler(placeholderImage)
+                return
             }
             
-            //만든 task를 task 목록에 추가
-            imagesDownloadTasks[imageURL] = task
-            
-            //task 실행
+            if let data = data, let image = UIImage(data: data) {
+                self.dictionaryUpdateQueue.async(flags: .barrier) {
+                    self.cachedImages[imageURL] = image
+                }
+                completionHandler(image)
+            } else {
+                self.dictionaryUpdateQueue.async(flags: .barrier) {
+                    self.cachedImages[imageURL] = placeholderImage
+                }
+                completionHandler(placeholderImage)
+            }
+        }
+        
+        dictionaryUpdateQueue.async(flags: .barrier) {
+            self.imagesDownloadTasks[imageURL] = task
+        }
+        
+        queue.async {
             task.resume()
         }
     }
 
-    private func getCachedImageFrom(url: URL) -> UIImage? {
-        return cachedImages[url]
+    func getCachedImageFrom(url: URL) -> UIImage? {
+        var image: UIImage?
+        dictionaryUpdateQueue.sync {
+            image = self.cachedImages[url]
+        }
+        return image
     }
 
-    private func getDataTaskFrom(url: URL) -> URLSessionTask? {
-        return imagesDownloadTasks[url]
+    func getDataTaskFrom(url: URL) -> URLSessionTask? {
+        var task: URLSessionTask?
+        dictionaryUpdateQueue.sync {
+            task = self.imagesDownloadTasks[url]
+        }
+        return task
     }
 }
+
+
+
+

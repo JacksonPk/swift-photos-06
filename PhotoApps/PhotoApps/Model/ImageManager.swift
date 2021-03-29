@@ -14,23 +14,56 @@ class ImageManager {
     private let downloader: ImageDownloader
     private let infoStorage: ImageInfoStorage
     private let imageURLs: [URL]
+    private let backgroundDownloadQueue: DispatchQueue
+    private let cellInitTimeDownloadQueue: DispatchQueue
     
     init(jsonTitle: String) {
         self.downloader = ImageDownloader()
         self.infoStorage = ImageInfoStorage(jsonTitle: jsonTitle)
         self.imageURLs = infoStorage.imageURLs()
+        self.backgroundDownloadQueue = DispatchQueue(label: "background",
+                                                        qos: .userInitiated,
+                                                        attributes: .concurrent,
+                                                        autoreleaseFrequency: .workItem,
+                                                        target: nil)
+        self.cellInitTimeDownloadQueue = DispatchQueue(label: "cellInitTime",
+                                                       qos: .userInitiated,
+                                                       attributes: .concurrent,
+                                                       autoreleaseFrequency: .workItem,
+                                                       target: nil)
+    }
+    
+    func startDownloadingAtBackground() {
+        imageURLs.forEach { (url) in
+            backgroundDownloadQueue.sync {
+                self.downloader.downloadImage(inQueue: self.backgroundDownloadQueue,
+                                              imageURL: url, completionHandler: { (_) in },
+                                              placeholderImage: UIImage())
+            }
+        }
+    }
+    
+    enum NotiKeys {
+        static let imageDownloadDone = Notification.Name("imageDownloadDone")
+    }
+    
+    func imageForIndex(_ index: Int) -> UIImage {
+        if let image = downloader.getCachedImageFrom(url: imageURLs[index]) { return image }
+
+        var imageLoaded = UIImage()
+        downloader.downloadImage(inQueue: self.cellInitTimeDownloadQueue,
+                                 imageURL: imageURLs[index],
+                                 completionHandler: { (image) in
+                                    imageLoaded = image
+                                 },placeholderImage: UIImage())
+        
+        let info = ["index": index]
+        NotificationCenter.default.post(name: NotiKeys.imageDownloadDone, object: self, userInfo: info)
+
+        return imageLoaded
     }
     
     func imageCounts() -> Int {
         return imageURLs.count
-    }
-    
-    func imageForIndex(_ index: Int) -> UIImage {
-        var imageLoaded = UIImage()
-        downloader.downloadImage(imageURL: imageURLs[index],
-                                 completionHandler: { (image, isSuccess) in
-                                    imageLoaded = isSuccess ? image! : UIImage()
-                                 })
-        return imageLoaded
     }
 }
